@@ -1,0 +1,25 @@
+# Runtime state and local browser checks
+.DS_Store
+.checks/
+.updates/
+__pycache__/
+*.py[cod]
+*.tmp
+_site/
+.samurai-github-export.json
+
+# Generated snapshots are restored from bootstrap and refreshed in Actions.
+data/
+data.js
+catalog-data.js
+team-difficulty.js
+team-intersections.js
+training-data.js
+played-questions-data.js
+registration-training.js
+samurai-dashboard.html
+
+# Local configuration, if ever added
+.env
+.env.*
+!.env.example
