@@ -1,0 +1,137 @@
+name: Обновление дашборда и GitHub Pages
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+  schedule:
+    # UTC: 00:17, 06:17, 12:17 and 18:17 (03:17, 09:17, 15:17, 21:17 Moscow).
+    - cron: '17 */6 * * *'
+
+# Both automatic and manual runs publish only the default branch.
+# GitHub keeps one running and one pending run; the running update is preserved.
+concurrency:
+  group: samurai-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Check Pages configuration
+        uses: actions/configure-pages@v5
+
+      - name: Restore saved snapshot
+        run: python3 scripts/restore_bootstrap.py
+
+      # Restore a coherent last-successful snapshot, including the latest history
+      # used by the updater's regression guard. Cache eviction is safe: the
+      # bootstrap contains a complete seed and every source is refreshed again.
+      - name: Restore last successful snapshot and source caches
+        id: snapshot-cache
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: |
+            data
+            data.js
+            team-difficulty.js
+            team-intersections.js
+            catalog-data.js
+            training-data.js
+            played-questions-data.js
+            registration-training.js
+          key: samurai-snapshot-v1-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            samurai-snapshot-v1-${{ runner.os }}-
+
+      - name: Restore source rate-limit cooldown
+        id: cooldown-cache
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: .updates/gotquestions-cooldown.json
+          key: samurai-cooldown-v1-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            samurai-cooldown-v1-${{ runner.os }}-
+
+      - name: Rebuild and verify restored snapshot
+        run: |
+          python3 scripts/build_standalone.py
+          python3 scripts/build_pages.py --validate-only
+
+      - name: Verify Pages builder
+        run: python3 -m unittest discover -s tests -p 'test_build_pages.py'
+
+      # A failed refresh stops publication. The last successful Pages deployment
+      # remains online; the seed snapshot is never published as a fallback.
+      - name: Update every data source and validate snapshot
+        id: update
+        run: python3 scripts/update_dashboard.py
+
+      - name: Build clean static website
+        run: python3 scripts/build_pages.py --output _site
+
+      - name: Save validated snapshot and public source caches
+        if: always() && steps.update.outcome == 'success'
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: |
+            data
+            data.js
+            team-difficulty.js
+            team-intersections.js
+            catalog-data.js
+            training-data.js
+            played-questions-data.js
+            registration-training.js
+          key: samurai-snapshot-v1-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # A 429 cooldown survives a failed update; diagnostics and temporary data
+      # never enter either the cache or the public Pages artifact.
+      - name: Save source rate-limit cooldown
+        if: always() && (steps.cooldown-cache.outcome == 'success' || steps.cooldown-cache.outcome == 'failure')
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: .updates/gotquestions-cooldown.json
+          key: samurai-cooldown-v1-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload website only
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
